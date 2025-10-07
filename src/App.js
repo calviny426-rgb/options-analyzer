@@ -1,6 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { TrendingUp, TrendingDown, DollarSign, Layers, ChevronDown, ChevronUp, Menu, X } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 const OptionsAnalyzer = () => {
   const [stockSymbol, setStockSymbol] = useState('');
