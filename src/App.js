@@ -37,9 +37,11 @@ const OptionsAnalyzer = () => {
     setSelectedOptions([]);
 
     try {
-      const response = await fetch(
-        `https://query2.finance.yahoo.com/v7/finance/options/${stockSymbol}`
-      );
+      // Use CORS proxy to bypass browser restrictions
+      const proxyUrl = 'https://corsproxy.io/?';
+      const apiUrl = `https://query2.finance.yahoo.com/v7/finance/options/${stockSymbol}`;
+      
+      const response = await fetch(proxyUrl + encodeURIComponent(apiUrl));
 
       if (!response.ok) {
         throw new Error('Invalid symbol or no data available');
@@ -75,9 +77,10 @@ const OptionsAnalyzer = () => {
 
   const loadExpirationData = async (symbol, expirationTs, currentPrice) => {
     try {
-      const response = await fetch(
-        `https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${expirationTs}`
-      );
+      const proxyUrl = 'https://corsproxy.io/?';
+      const apiUrl = `https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${expirationTs}`;
+      
+      const response = await fetch(proxyUrl + encodeURIComponent(apiUrl));
 
       const data = await response.json();
       const result = data.optionChain.result[0];
