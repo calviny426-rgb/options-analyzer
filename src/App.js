@@ -10,7 +10,6 @@ const OptionsAnalyzer = () => {
   const [selectedOptions, setSelectedOptions] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState('call');
   const [results, setResults] = useState(null);
-  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -57,7 +56,6 @@ const OptionsAnalyzer = () => {
 
       setStockPrice(parseFloat(quote.regularMarketPrice.toFixed(2)));
       
-      // Set expiration dates
       const expDates = result.expirationDates.map(ts => ({
         timestamp: ts,
         date: new Date(ts * 1000).toLocaleDateString(),
@@ -66,7 +64,6 @@ const OptionsAnalyzer = () => {
       setExpirationDates(expDates);
       setSelectedExpiration(expDates[0].timestamp);
 
-      // Load first expiration
       await loadExpirationData(stockSymbol, expDates[0].timestamp, quote.regularMarketPrice);
 
       setLoading(false);
@@ -86,7 +83,6 @@ const OptionsAnalyzer = () => {
       const result = data.optionChain.result[0];
       const options = result.options[0];
 
-      // Filter and sort options
       const calls = options.calls
         .filter(c => c.lastPrice > 0 && c.strike >= currentPrice * 0.7 && c.strike <= currentPrice * 1.3)
         .sort((a, b) => a.strike - b.strike);
@@ -95,7 +91,6 @@ const OptionsAnalyzer = () => {
         .filter(p => p.lastPrice > 0 && p.strike >= currentPrice * 0.7 && p.strike <= currentPrice * 1.3)
         .sort((a, b) => a.strike - b.strike);
 
-      // Calculate average IV
       const avgIV = [...calls, ...puts]
         .filter(o => o.impliedVolatility)
         .reduce((sum, o, i, arr) => sum + o.impliedVolatility / arr.length, 0);
@@ -134,11 +129,10 @@ const OptionsAnalyzer = () => {
     }
   };
 
-  const calculateStrategy = () => {
+  const calculateStrategy = useCallback(() => {
     if (selectedOptions.length === 0) return null;
 
     const T = expirationDates.find(e => e.timestamp === selectedExpiration)?.daysToExp / 365 || 0.25;
-    const r = 0.05;
     const sigma = volatility / 100;
 
     const upMove = sigma * Math.sqrt(T);
@@ -147,13 +141,11 @@ const OptionsAnalyzer = () => {
     const stockUp = stockPrice * Math.exp(upMove);
     const stockDown = stockPrice * Math.exp(-downMove);
 
-    // Calculate current cost
     let currentCost = 0;
     selectedOptions.forEach(opt => {
       currentCost += opt.lastPrice;
     });
 
-    // Calculate values after moves
     const calcOptionValue = (S, opt) => {
       if (opt.type === 'call') {
         return Math.max(0, S - opt.strike);
@@ -185,7 +177,7 @@ const OptionsAnalyzer = () => {
       maxGain: profitUp > 0 ? profitUp.toFixed(2) : 'Limited',
       maxLoss: currentCost.toFixed(2)
     };
-  };
+  }, [selectedOptions, stockPrice, volatility, selectedExpiration, expirationDates]);
 
   useEffect(() => {
     if (selectedOptions.length > 0) {
@@ -194,7 +186,7 @@ const OptionsAnalyzer = () => {
     } else {
       setResults(null);
     }
-  }, [selectedOptions, stockPrice, volatility, selectedExpiration]);
+  }, [selectedOptions, calculateStrategy]);
 
   if (showLanding) {
     return (
@@ -242,7 +234,6 @@ const OptionsAnalyzer = () => {
 
   return (
     <div className="min-h-screen bg-black">
-      {/* Header */}
       <div className="bg-zinc-900 border-b border-zinc-800 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
@@ -257,7 +248,6 @@ const OptionsAnalyzer = () => {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {/* Search and Fetch */}
         <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="flex-1">
@@ -299,7 +289,6 @@ const OptionsAnalyzer = () => {
           )}
         </div>
 
-        {/* Stock Info & Expiration */}
         {stockPrice > 0 && (
           <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
@@ -357,7 +346,6 @@ const OptionsAnalyzer = () => {
           </div>
         )}
 
-        {/* Selected Options Display */}
         {selectedOptions.length > 0 && (
           <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
             <h3 className="text-lg font-bold text-white mb-3">Selected Options ({selectedOptions.length})</h3>
@@ -383,7 +371,6 @@ const OptionsAnalyzer = () => {
           </div>
         )}
 
-        {/* Analysis Results */}
         {results && (
           <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
             <h3 className="text-lg font-bold text-white mb-4">Strategy Analysis</h3>
@@ -420,7 +407,6 @@ const OptionsAnalyzer = () => {
           </div>
         )}
 
-        {/* Option Chain */}
         {optionChain && (
           <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6">
             <h3 className="text-lg font-bold text-white mb-4">
