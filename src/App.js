@@ -1,889 +1,498 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { TrendingUp, TrendingDown, DollarSign, Layers, ChevronDown, ChevronUp } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Layers, ChevronDown, ChevronUp, Menu, X } from 'lucide-react';
 
 const OptionsAnalyzer = () => {
   const [stockSymbol, setStockSymbol] = useState('');
-  const [stockPrice, setStockPrice] = useState(25.50);
-  const [volatility, setVolatility] = useState(35);
-  const [daysToExpiration, setDaysToExpiration] = useState(30);
-  const [strikes, setStrikes] = useState([20, 22.5, 25, 27.5, 30]);
-  const [callPrices, setCallPrices] = useState([5.80, 3.50, 1.80, 0.60, 0.15]);
-  const [putPrices, setPutPrices] = useState([0.10, 0.30, 1.50, 3.40, 5.60]);
+  const [stockPrice, setStockPrice] = useState(0);
+  const [volatility, setVolatility] = useState(0);
+  const [expirationDates, setExpirationDates] = useState([]);
+  const [selectedExpiration, setSelectedExpiration] = useState(null);
+  const [optionChain, setOptionChain] = useState(null);
+  const [selectedOptions, setSelectedOptions] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState('call');
   const [results, setResults] = useState(null);
-  const [expandedSection, setExpandedSection] = useState('inputs');
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   const strategies = [
-    { value: 'call', label: 'Long Call', type: 'single' },
-    { value: 'put', label: 'Long Put', type: 'single' },
-    { value: 'vertical_call_spread', label: 'Bull Call Spread', type: 'spread' },
-    { value: 'vertical_put_spread', label: 'Bear Put Spread', type: 'spread' },
-    { value: 'iron_condor', label: 'Iron Condor', type: 'advanced' },
-    { value: 'butterfly', label: 'Long Call Butterfly', type: 'advanced' },
-    { value: 'put_butterfly', label: 'Long Put Butterfly', type: 'advanced' },
-    { value: 'straddle', label: 'Long Straddle', type: 'volatility' },
-    { value: 'strangle', label: 'Long Strangle', type: 'volatility' },
+    { value: 'call', label: 'Long Call', legs: 1 },
+    { value: 'put', label: 'Long Put', legs: 1 },
+    { value: 'vertical_call_spread', label: 'Bull Call Spread', legs: 2 },
+    { value: 'vertical_put_spread', label: 'Bear Put Spread', legs: 2 },
+    { value: 'iron_condor', label: 'Iron Condor', legs: 4 },
+    { value: 'butterfly', label: 'Butterfly', legs: 3 },
+    { value: 'straddle', label: 'Straddle', legs: 2 },
+    { value: 'strangle', label: 'Strangle', legs: 2 },
   ];
 
-  const blackScholesCall = (S, K, T, r, sigma) => {
-    if (T <= 0) return Math.max(0, S - K);
-    
-    const d1 = (Math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * Math.sqrt(T));
-    const d2 = d1 - sigma * Math.sqrt(T);
-    
-    const normCdf = (x) => {
-      const t = 1 / (1 + 0.2316419 * Math.abs(x));
-      const d = 0.3989423 * Math.exp(-x * x / 2);
-      const prob = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-      return x > 0 ? 1 - prob : prob;
-    };
-    
-    return S * normCdf(d1) - K * Math.exp(-r * T) * normCdf(d2);
+  const fetchOptionData = async () => {
+    if (!stockSymbol) {
+      setError('Please enter a stock symbol');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setOptionChain(null);
+    setSelectedOptions([]);
+
+    try {
+      const response = await fetch(
+        `https://query2.finance.yahoo.com/v7/finance/options/${stockSymbol}`
+      );
+
+      if (!response.ok) {
+        throw new Error('Invalid symbol or no data available');
+      }
+
+      const data = await response.json();
+      
+      if (!data.optionChain || !data.optionChain.result || data.optionChain.result.length === 0) {
+        throw new Error('No option data available for this symbol');
+      }
+
+      const result = data.optionChain.result[0];
+      const quote = result.quote;
+
+      setStockPrice(parseFloat(quote.regularMarketPrice.toFixed(2)));
+      
+      // Set expiration dates
+      const expDates = result.expirationDates.map(ts => ({
+        timestamp: ts,
+        date: new Date(ts * 1000).toLocaleDateString(),
+        daysToExp: Math.ceil((ts * 1000 - Date.now()) / (1000 * 60 * 60 * 24))
+      }));
+      setExpirationDates(expDates);
+      setSelectedExpiration(expDates[0].timestamp);
+
+      // Load first expiration
+      await loadExpirationData(stockSymbol, expDates[0].timestamp, quote.regularMarketPrice);
+
+      setLoading(false);
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
   };
 
-  const blackScholesPut = (S, K, T, r, sigma) => {
-    if (T <= 0) return Math.max(0, K - S);
-    
-    const callPrice = blackScholesCall(S, K, T, r, sigma);
-    return callPrice - S + K * Math.exp(-r * T);
+  const loadExpirationData = async (symbol, expirationTs, currentPrice) => {
+    try {
+      const response = await fetch(
+        `https://query2.finance.yahoo.com/v7/finance/options/${symbol}?date=${expirationTs}`
+      );
+
+      const data = await response.json();
+      const result = data.optionChain.result[0];
+      const options = result.options[0];
+
+      // Filter and sort options
+      const calls = options.calls
+        .filter(c => c.lastPrice > 0 && c.strike >= currentPrice * 0.7 && c.strike <= currentPrice * 1.3)
+        .sort((a, b) => a.strike - b.strike);
+
+      const puts = options.puts
+        .filter(p => p.lastPrice > 0 && p.strike >= currentPrice * 0.7 && p.strike <= currentPrice * 1.3)
+        .sort((a, b) => a.strike - b.strike);
+
+      // Calculate average IV
+      const avgIV = [...calls, ...puts]
+        .filter(o => o.impliedVolatility)
+        .reduce((sum, o, i, arr) => sum + o.impliedVolatility / arr.length, 0);
+      
+      setVolatility(parseFloat((avgIV * 100).toFixed(1)));
+
+      setOptionChain({ calls, puts });
+    } catch (err) {
+      setError('Failed to load expiration data');
+    }
   };
 
-  const calculateSingleOption = (isCall) => {
-    const T = daysToExpiration / 365;
+  const handleExpirationChange = async (expirationTs) => {
+    setSelectedExpiration(expirationTs);
+    setLoading(true);
+    setSelectedOptions([]);
+    await loadExpirationData(stockSymbol, expirationTs, stockPrice);
+    setLoading(false);
+  };
+
+  const toggleOptionSelection = (option, type) => {
+    const optionWithType = { ...option, type };
+    const isSelected = selectedOptions.some(
+      o => o.contractSymbol === option.contractSymbol
+    );
+
+    if (isSelected) {
+      setSelectedOptions(selectedOptions.filter(
+        o => o.contractSymbol !== option.contractSymbol
+      ));
+    } else {
+      const strategy = strategies.find(s => s.value === selectedStrategy);
+      if (selectedOptions.length < strategy.legs) {
+        setSelectedOptions([...selectedOptions, optionWithType]);
+      }
+    }
+  };
+
+  const calculateStrategy = () => {
+    if (selectedOptions.length === 0) return null;
+
+    const T = expirationDates.find(e => e.timestamp === selectedExpiration)?.daysToExp / 365 || 0.25;
     const r = 0.05;
     const sigma = volatility / 100;
-    
+
     const upMove = sigma * Math.sqrt(T);
     const downMove = sigma * Math.sqrt(T);
-    
+
     const stockUp = stockPrice * Math.exp(upMove);
     const stockDown = stockPrice * Math.exp(-downMove);
-    
-    const prices = isCall ? callPrices : putPrices;
-    const calcFunc = isCall ? blackScholesCall : blackScholesPut;
-    
-    const analysisResults = strikes.map((strike, idx) => {
-      const currentPrice = prices[idx];
-      
-      const priceAfterUp = calcFunc(stockUp, strike, T * 0.5, r, sigma);
-      const priceAfterDown = calcFunc(stockDown, strike, T * 0.5, r, sigma);
-      
-      const percentGain = ((priceAfterUp - currentPrice) / currentPrice) * 100;
-      const percentLoss = ((priceAfterDown - currentPrice) / currentPrice) * 100;
-      const rewardRiskRatio = percentLoss !== 0 ? Math.abs(percentGain / percentLoss) : 0;
-      
-      return {
-        strike,
-        currentPrice: currentPrice.toFixed(2),
-        stockUp: stockUp.toFixed(2),
-        stockDown: stockDown.toFixed(2),
-        priceAfterUp: priceAfterUp.toFixed(2),
-        priceAfterDown: priceAfterDown.toFixed(2),
-        percentGain: percentGain.toFixed(1),
-        percentLoss: percentLoss.toFixed(1),
-        rewardRiskRatio: rewardRiskRatio.toFixed(2),
-        maxGain: 'Unlimited',
-        maxLoss: currentPrice.toFixed(2)
-      };
+
+    // Calculate current cost
+    let currentCost = 0;
+    selectedOptions.forEach(opt => {
+      currentCost += opt.lastPrice;
     });
-    
-    const sortedByReward = [...analysisResults].sort((a, b) => 
-      parseFloat(b.percentGain) - parseFloat(a.percentGain)
-    );
-    
-    const sortedByRatio = [...analysisResults].sort((a, b) => 
-      parseFloat(b.rewardRiskRatio) - parseFloat(a.rewardRiskRatio)
-    );
-    
-    return {
-      all: analysisResults,
-      byReward: sortedByReward,
-      byRatio: sortedByRatio
-    };
-  };
 
-  const calculateVerticalSpread = (isCallSpread) => {
-    const T = daysToExpiration / 365;
-    const r = 0.05;
-    const sigma = volatility / 100;
-    
-    const upMove = sigma * Math.sqrt(T);
-    const downMove = sigma * Math.sqrt(T);
-    
-    const stockUp = stockPrice * Math.exp(upMove);
-    const stockDown = stockPrice * Math.exp(-downMove);
-    
-    const results = [];
-    
-    for (let i = 0; i < strikes.length - 1; i++) {
-      for (let j = i + 1; j < strikes.length; j++) {
-        const longStrike = strikes[i];
-        const shortStrike = strikes[j];
-        
-        let netDebit, maxGain, maxLoss;
-        
-        if (isCallSpread) {
-          const longCallPrice = callPrices[i];
-          const shortCallPrice = callPrices[j];
-          netDebit = longCallPrice - shortCallPrice;
-          maxGain = (shortStrike - longStrike) - netDebit;
-          maxLoss = netDebit;
-          
-          const longCallUp = blackScholesCall(stockUp, longStrike, T * 0.5, r, sigma);
-          const shortCallUp = blackScholesCall(stockUp, shortStrike, T * 0.5, r, sigma);
-          const spreadValueUp = longCallUp - shortCallUp;
-          
-          const longCallDown = blackScholesCall(stockDown, longStrike, T * 0.5, r, sigma);
-          const shortCallDown = blackScholesCall(stockDown, shortStrike, T * 0.5, r, sigma);
-          const spreadValueDown = longCallDown - shortCallDown;
-          
-          const profitUp = spreadValueUp - netDebit;
-          const profitDown = spreadValueDown - netDebit;
-          
-          const percentGain = (profitUp / netDebit) * 100;
-          const percentLoss = (profitDown / netDebit) * 100;
-          
-          results.push({
-            description: `Buy ${longStrike} / Sell ${shortStrike} Call`,
-            longStrike,
-            shortStrike,
-            netDebit: netDebit.toFixed(2),
-            maxGain: maxGain.toFixed(2),
-            maxLoss: maxLoss.toFixed(2),
-            percentGain: percentGain.toFixed(1),
-            percentLoss: percentLoss.toFixed(1),
-            rewardRiskRatio: (maxGain / maxLoss).toFixed(2),
-          });
-        } else {
-          const longPutPrice = putPrices[j];
-          const shortPutPrice = putPrices[i];
-          netDebit = longPutPrice - shortPutPrice;
-          maxGain = (shortStrike - longStrike) - netDebit;
-          maxLoss = netDebit;
-          
-          const longPutDown = blackScholesPut(stockDown, shortStrike, T * 0.5, r, sigma);
-          const shortPutDown = blackScholesPut(stockDown, longStrike, T * 0.5, r, sigma);
-          const spreadValueDown = longPutDown - shortPutDown;
-          
-          const longPutUp = blackScholesPut(stockUp, shortStrike, T * 0.5, r, sigma);
-          const shortPutUp = blackScholesPut(stockUp, longStrike, T * 0.5, r, sigma);
-          const spreadValueUp = longPutUp - shortPutUp;
-          
-          const profitDown = spreadValueDown - netDebit;
-          const profitUp = spreadValueUp - netDebit;
-          
-          const percentGain = (profitDown / netDebit) * 100;
-          const percentLoss = (profitUp / netDebit) * 100;
-          
-          results.push({
-            description: `Buy ${shortStrike} / Sell ${longStrike} Put`,
-            longStrike: shortStrike,
-            shortStrike: longStrike,
-            netDebit: netDebit.toFixed(2),
-            maxGain: maxGain.toFixed(2),
-            maxLoss: maxLoss.toFixed(2),
-            percentGain: percentGain.toFixed(1),
-            percentLoss: percentLoss.toFixed(1),
-            rewardRiskRatio: (maxGain / maxLoss).toFixed(2),
-          });
-        }
+    // Calculate values after moves
+    const calcOptionValue = (S, opt) => {
+      if (opt.type === 'call') {
+        return Math.max(0, S - opt.strike);
+      } else {
+        return Math.max(0, opt.strike - S);
       }
-    }
-    
-    const sortedByReward = [...results].sort((a, b) => 
-      parseFloat(b.percentGain) - parseFloat(a.percentGain)
-    );
-    
-    const sortedByRatio = [...results].sort((a, b) => 
-      parseFloat(b.rewardRiskRatio) - parseFloat(a.rewardRiskRatio)
-    );
-    
-    return {
-      all: results,
-      byReward: sortedByReward,
-      byRatio: sortedByRatio
     };
-  };
 
-  const calculateButterfly = (isCall) => {
-    const T = daysToExpiration / 365;
-    const r = 0.05;
-    const sigma = volatility / 100;
-    
-    const upMove = sigma * Math.sqrt(T);
-    const downMove = sigma * Math.sqrt(T);
-    
-    const stockUp = stockPrice * Math.exp(upMove);
-    const stockDown = stockPrice * Math.exp(-downMove);
-    
-    const results = [];
-    
-    for (let i = 0; i < strikes.length - 2; i++) {
-      for (let j = i + 1; j < strikes.length - 1; j++) {
-        for (let k = j + 1; k < strikes.length; k++) {
-          const lowerStrike = strikes[i];
-          const middleStrike = strikes[j];
-          const upperStrike = strikes[k];
-          
-          if ((middleStrike - lowerStrike) !== (upperStrike - middleStrike)) continue;
-          
-          let netDebit, maxGain;
-          
-          if (isCall) {
-            const lowerCallPrice = callPrices[i];
-            const middleCallPrice = callPrices[j];
-            const upperCallPrice = callPrices[k];
-            
-            netDebit = lowerCallPrice - (2 * middleCallPrice) + upperCallPrice;
-            maxGain = (middleStrike - lowerStrike) - netDebit;
-            
-            const lowerCallUp = blackScholesCall(stockUp, lowerStrike, T * 0.5, r, sigma);
-            const middleCallUp = blackScholesCall(stockUp, middleStrike, T * 0.5, r, sigma);
-            const upperCallUp = blackScholesCall(stockUp, upperStrike, T * 0.5, r, sigma);
-            const butterflyValueUp = lowerCallUp - (2 * middleCallUp) + upperCallUp;
-            
-            const lowerCallDown = blackScholesCall(stockDown, lowerStrike, T * 0.5, r, sigma);
-            const middleCallDown = blackScholesCall(stockDown, middleStrike, T * 0.5, r, sigma);
-            const upperCallDown = blackScholesCall(stockDown, upperStrike, T * 0.5, r, sigma);
-            const butterflyValueDown = lowerCallDown - (2 * middleCallDown) + upperCallDown;
-            
-            const profitUp = butterflyValueUp - netDebit;
-            const profitDown = butterflyValueDown - netDebit;
-            
-            const percentGain = netDebit > 0 ? (profitUp / netDebit) * 100 : 0;
-            const percentLoss = netDebit > 0 ? (profitDown / netDebit) * 100 : 0;
-            
-            results.push({
-              description: `${lowerStrike}/${middleStrike}/${upperStrike} Call Butterfly`,
-              strikes: `${lowerStrike}/${middleStrike}/${upperStrike}`,
-              netDebit: netDebit.toFixed(2),
-              maxGain: maxGain.toFixed(2),
-              maxLoss: netDebit.toFixed(2),
-              percentGain: percentGain.toFixed(1),
-              percentLoss: percentLoss.toFixed(1),
-              rewardRiskRatio: netDebit > 0 ? (maxGain / netDebit).toFixed(2) : '0.00',
-            });
-          } else {
-            const lowerPutPrice = putPrices[i];
-            const middlePutPrice = putPrices[j];
-            const upperPutPrice = putPrices[k];
-            
-            netDebit = upperPutPrice - (2 * middlePutPrice) + lowerPutPrice;
-            maxGain = (middleStrike - lowerStrike) - netDebit;
-            
-            const lowerPutUp = blackScholesPut(stockUp, lowerStrike, T * 0.5, r, sigma);
-            const middlePutUp = blackScholesPut(stockUp, middleStrike, T * 0.5, r, sigma);
-            const upperPutUp = blackScholesPut(stockUp, upperStrike, T * 0.5, r, sigma);
-            const butterflyValueUp = upperPutUp - (2 * middlePutUp) + lowerPutUp;
-            
-            const lowerPutDown = blackScholesPut(stockDown, lowerStrike, T * 0.5, r, sigma);
-            const middlePutDown = blackScholesPut(stockDown, middleStrike, T * 0.5, r, sigma);
-            const upperPutDown = blackScholesPut(stockDown, upperStrike, T * 0.5, r, sigma);
-            const butterflyValueDown = upperPutDown - (2 * middlePutDown) + lowerPutDown;
-            
-            const profitUp = butterflyValueUp - netDebit;
-            const profitDown = butterflyValueDown - netDebit;
-            
-            const percentGain = netDebit > 0 ? (profitUp / netDebit) * 100 : 0;
-            const percentLoss = netDebit > 0 ? (profitDown / netDebit) * 100 : 0;
-            
-            results.push({
-              description: `${lowerStrike}/${middleStrike}/${upperStrike} Put Butterfly`,
-              strikes: `${lowerStrike}/${middleStrike}/${upperStrike}`,
-              netDebit: netDebit.toFixed(2),
-              maxGain: maxGain.toFixed(2),
-              maxLoss: netDebit.toFixed(2),
-              percentGain: percentGain.toFixed(1),
-              percentLoss: percentLoss.toFixed(1),
-              rewardRiskRatio: netDebit > 0 ? (maxGain / netDebit).toFixed(2) : '0.00',
-            });
-          }
-        }
-      }
-    }
-    
-    const sortedByReward = [...results].sort((a, b) => 
-      parseFloat(b.percentGain) - parseFloat(a.percentGain)
-    );
-    
-    const sortedByRatio = [...results].sort((a, b) => 
-      parseFloat(b.rewardRiskRatio) - parseFloat(a.rewardRiskRatio)
-    );
-    
-    return {
-      all: results,
-      byReward: sortedByReward,
-      byRatio: sortedByRatio
-    };
-  };
-
-  const calculateIronCondor = () => {
-    const T = daysToExpiration / 365;
-    const r = 0.05;
-    const sigma = volatility / 100;
-    
-    const upMove = sigma * Math.sqrt(T);
-    const downMove = sigma * Math.sqrt(T);
-    
-    const stockUp = stockPrice * Math.exp(upMove);
-    const stockDown = stockPrice * Math.exp(-downMove);
-    
-    const results = [];
-    
-    for (let i = 0; i < strikes.length - 3; i++) {
-      for (let j = i + 1; j < strikes.length - 2; j++) {
-        for (let k = j + 1; k < strikes.length - 1; k++) {
-          for (let l = k + 1; l < strikes.length; l++) {
-            const putLong = strikes[i];
-            const putShort = strikes[j];
-            const callShort = strikes[k];
-            const callLong = strikes[l];
-            
-            const netCredit = (putPrices[j] - putPrices[i]) + (callPrices[k] - callPrices[l]);
-            const maxLoss = Math.min(putShort - putLong, callLong - callShort) - netCredit;
-            
-            const putLongDown = blackScholesPut(stockDown, putLong, T * 0.5, r, sigma);
-            const putShortDown = blackScholesPut(stockDown, putShort, T * 0.5, r, sigma);
-            const callShortDown = blackScholesCall(stockDown, callShort, T * 0.5, r, sigma);
-            const callLongDown = blackScholesCall(stockDown, callLong, T * 0.5, r, sigma);
-            
-            const condorValueDown = (putShortDown - putLongDown) + (callShortDown - callLongDown);
-            const profitDown = netCredit - condorValueDown;
-            
-            const putLongUp = blackScholesPut(stockUp, putLong, T * 0.5, r, sigma);
-            const putShortUp = blackScholesPut(stockUp, putShort, T * 0.5, r, sigma);
-            const callShortUp = blackScholesCall(stockUp, callShort, T * 0.5, r, sigma);
-            const callLongUp = blackScholesCall(stockUp, callLong, T * 0.5, r, sigma);
-            
-            const condorValueUp = (putShortUp - putLongUp) + (callShortUp - callLongUp);
-            const profitUp = netCredit - condorValueUp;
-            
-            const percentGain = maxLoss > 0 ? (netCredit / maxLoss) * 100 : 0;
-            const worstProfit = Math.min(profitUp, profitDown);
-            const percentLoss = maxLoss > 0 ? (worstProfit / maxLoss) * 100 : 0;
-            
-            results.push({
-              description: `${putLong}/${putShort}/${callShort}/${callLong} Iron Condor`,
-              strikes: `${putLong}/${putShort}/${callShort}/${callLong}`,
-              netCredit: netCredit.toFixed(2),
-              maxGain: netCredit.toFixed(2),
-              maxLoss: maxLoss.toFixed(2),
-              percentGain: percentGain.toFixed(1),
-              percentLoss: percentLoss.toFixed(1),
-              rewardRiskRatio: maxLoss > 0 ? (netCredit / maxLoss).toFixed(2) : '0.00',
-            });
-          }
-        }
-      }
-    }
-    
-    const sortedByReward = [...results].sort((a, b) => 
-      parseFloat(b.percentGain) - parseFloat(a.percentGain)
-    );
-    
-    const sortedByRatio = [...results].sort((a, b) => 
-      parseFloat(b.rewardRiskRatio) - parseFloat(a.rewardRiskRatio)
-    );
-    
-    return {
-      all: results.slice(0, 20),
-      byReward: sortedByReward.slice(0, 5),
-      byRatio: sortedByRatio.slice(0, 5)
-    };
-  };
-
-  const calculateStraddle = () => {
-    const T = daysToExpiration / 365;
-    const r = 0.05;
-    const sigma = volatility / 100;
-    
-    const upMove = sigma * Math.sqrt(T);
-    const downMove = sigma * Math.sqrt(T);
-    
-    const stockUp = stockPrice * Math.exp(upMove);
-    const stockDown = stockPrice * Math.exp(-downMove);
-    
-    const results = strikes.map((strike, idx) => {
-      const totalCost = callPrices[idx] + putPrices[idx];
-      
-      const callUp = blackScholesCall(stockUp, strike, T * 0.5, r, sigma);
-      const putUp = blackScholesPut(stockUp, strike, T * 0.5, r, sigma);
-      const valueUp = callUp + putUp;
-      
-      const callDown = blackScholesCall(stockDown, strike, T * 0.5, r, sigma);
-      const putDown = blackScholesPut(stockDown, strike, T * 0.5, r, sigma);
-      const valueDown = callDown + putDown;
-      
-      const profitUp = valueUp - totalCost;
-      const profitDown = valueDown - totalCost;
-      const maxProfit = Math.max(profitUp, profitDown);
-      
-      const percentGain = (maxProfit / totalCost) * 100;
-      const minProfit = Math.min(profitUp, profitDown);
-      const percentLoss = (minProfit / totalCost) * 100;
-      
-      return {
-        description: `${strike} Straddle`,
-        strike,
-        totalCost: totalCost.toFixed(2),
-        maxGain: 'Unlimited',
-        maxLoss: totalCost.toFixed(2),
-        percentGain: percentGain.toFixed(1),
-        percentLoss: percentLoss.toFixed(1),
-        rewardRiskRatio: (maxProfit / totalCost).toFixed(2),
-      };
+    let valueUp = 0;
+    let valueDown = 0;
+    selectedOptions.forEach(opt => {
+      valueUp += calcOptionValue(stockUp, opt);
+      valueDown += calcOptionValue(stockDown, opt);
     });
-    
-    const sortedByReward = [...results].sort((a, b) => 
-      parseFloat(b.percentGain) - parseFloat(a.percentGain)
-    );
-    
-    const sortedByRatio = [...results].sort((a, b) => 
-      parseFloat(b.rewardRiskRatio) - parseFloat(a.rewardRiskRatio)
-    );
-    
-    return {
-      all: results,
-      byReward: sortedByReward,
-      byRatio: sortedByRatio
-    };
-  };
 
-  const calculateStrangle = () => {
-    const T = daysToExpiration / 365;
-    const r = 0.05;
-    const sigma = volatility / 100;
-    
-    const upMove = sigma * Math.sqrt(T);
-    const downMove = sigma * Math.sqrt(T);
-    
-    const stockUp = stockPrice * Math.exp(upMove);
-    const stockDown = stockPrice * Math.exp(-downMove);
-    
-    const results = [];
-    
-    for (let i = 0; i < strikes.length - 1; i++) {
-      for (let j = i + 1; j < strikes.length; j++) {
-        const putStrike = strikes[i];
-        const callStrike = strikes[j];
-        
-        const totalCost = putPrices[i] + callPrices[j];
-        
-        const callUp = blackScholesCall(stockUp, callStrike, T * 0.5, r, sigma);
-        const putUp = blackScholesPut(stockUp, putStrike, T * 0.5, r, sigma);
-        const valueUp = callUp + putUp;
-        
-        const callDown = blackScholesCall(stockDown, callStrike, T * 0.5, r, sigma);
-        const putDown = blackScholesPut(stockDown, putStrike, T * 0.5, r, sigma);
-        const valueDown = callDown + putDown;
-        
-        const profitUp = valueUp - totalCost;
-        const profitDown = valueDown - totalCost;
-        const maxProfit = Math.max(profitUp, profitDown);
-        
-        const percentGain = (maxProfit / totalCost) * 100;
-        const minProfit = Math.min(profitUp, profitDown);
-        const percentLoss = (minProfit / totalCost) * 100;
-        
-        results.push({
-          description: `${putStrike}/${callStrike} Strangle`,
-          strikes: `${putStrike}/${callStrike}`,
-          totalCost: totalCost.toFixed(2),
-          maxGain: 'Unlimited',
-          maxLoss: totalCost.toFixed(2),
-          percentGain: percentGain.toFixed(1),
-          percentLoss: percentLoss.toFixed(1),
-          rewardRiskRatio: (maxProfit / totalCost).toFixed(2),
-        });
-      }
-    }
-    
-    const sortedByReward = [...results].sort((a, b) => 
-      parseFloat(b.percentGain) - parseFloat(a.percentGain)
-    );
-    
-    const sortedByRatio = [...results].sort((a, b) => 
-      parseFloat(b.rewardRiskRatio) - parseFloat(a.rewardRiskRatio)
-    );
-    
-    return {
-      all: results.slice(0, 15),
-      byReward: sortedByReward.slice(0, 5),
-      byRatio: sortedByRatio.slice(0, 5)
-    };
-  };
+    const profitUp = valueUp - currentCost;
+    const profitDown = valueDown - currentCost;
+    const percentGain = ((profitUp / currentCost) * 100).toFixed(1);
+    const percentLoss = ((profitDown / currentCost) * 100).toFixed(1);
+    const rewardRiskRatio = currentCost > 0 ? (Math.abs(profitUp) / currentCost).toFixed(2) : '0.00';
 
-  const calculateResults = () => {
-    switch(selectedStrategy) {
-      case 'call':
-        return calculateSingleOption(true);
-      case 'put':
-        return calculateSingleOption(false);
-      case 'vertical_call_spread':
-        return calculateVerticalSpread(true);
-      case 'vertical_put_spread':
-        return calculateVerticalSpread(false);
-      case 'butterfly':
-        return calculateButterfly(true);
-      case 'put_butterfly':
-        return calculateButterfly(false);
-      case 'iron_condor':
-        return calculateIronCondor();
-      case 'straddle':
-        return calculateStraddle();
-      case 'strangle':
-        return calculateStrangle();
-      default:
-        return calculateSingleOption(true);
-    }
+    return {
+      currentCost: currentCost.toFixed(2),
+      profitUp: profitUp.toFixed(2),
+      profitDown: profitDown.toFixed(2),
+      percentGain,
+      percentLoss,
+      rewardRiskRatio,
+      maxGain: profitUp > 0 ? profitUp.toFixed(2) : 'Limited',
+      maxLoss: currentCost.toFixed(2)
+    };
   };
 
   useEffect(() => {
-    const newResults = calculateResults();
-    setResults(newResults);
-  }, [stockPrice, volatility, daysToExpiration, strikes, callPrices, putPrices, selectedStrategy]);
-
-  const addStrike = () => {
-    setStrikes([...strikes, strikes[strikes.length - 1] + 2.5]);
-    setCallPrices([...callPrices, 0.10]);
-    setPutPrices([...putPrices, 0.10]);
-  };
-
-  const updateStrike = (idx, value) => {
-    const newStrikes = [...strikes];
-    newStrikes[idx] = parseFloat(value);
-    setStrikes(newStrikes);
-  };
-
-  const updateCallPrice = (idx, value) => {
-    const newPrices = [...callPrices];
-    newPrices[idx] = parseFloat(value);
-    setCallPrices(newPrices);
-  };
-
-  const updatePutPrice = (idx, value) => {
-    const newPrices = [...putPrices];
-    newPrices[idx] = parseFloat(value);
-    setPutPrices(newPrices);
-  };
-
-  const removeStrike = (idx) => {
-    if (strikes.length > 1) {
-      setStrikes(strikes.filter((_, i) => i !== idx));
-      setCallPrices(callPrices.filter((_, i) => i !== idx));
-      setPutPrices(putPrices.filter((_, i) => i !== idx));
+    if (selectedOptions.length > 0) {
+      const result = calculateStrategy();
+      setResults(result);
+    } else {
+      setResults(null);
     }
-  };
+  }, [selectedOptions, stockPrice, volatility, selectedExpiration]);
 
-  const toggleSection = (section) => {
-    setExpandedSection(expandedSection === section ? null : section);
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-white rounded-lg shadow-2xl p-8 mb-6">
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-4xl font-bold text-slate-800 mb-2">Advanced Options Analyzer</h1>
-              <p className="text-slate-600">Professional-grade options strategy analysis and ranking</p>
+  if (showLanding) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-black via-zinc-900 to-black flex items-center justify-center p-4">
+        <div className="max-w-6xl w-full">
+          <div className="text-center mb-12 animate-fade-in">
+            <div className="mb-8 flex justify-center">
+              <div className="text-9xl">🐅</div>
             </div>
-            <Layers className="text-blue-600" size={48} />
-          </div>
-          
-          <div 
-            className="bg-slate-50 rounded-lg p-4 mb-6 cursor-pointer hover:bg-slate-100 transition"
-            onClick={() => toggleSection('inputs')}
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold text-slate-800">Market Inputs</h2>
-              {expandedSection === 'inputs' ? <ChevronUp /> : <ChevronDown />}
-            </div>
+            <h1 className="text-6xl md:text-7xl font-bold mb-4 bg-gradient-to-r from-orange-500 via-orange-400 to-amber-500 bg-clip-text text-transparent">
+              Tiger Options
+            </h1>
+            <p className="text-xl md:text-2xl text-zinc-400 mb-8">
+              Real-time options chain with professional strategy analysis
+            </p>
+            <button
+              onClick={() => setShowLanding(false)}
+              className="px-8 py-4 bg-gradient-to-r from-orange-500 to-orange-600 text-white text-lg font-semibold rounded-xl hover:from-orange-600 hover:to-orange-700 transition-all transform hover:scale-105 shadow-lg"
+            >
+              Get Started
+            </button>
           </div>
 
-          {expandedSection === 'inputs' && (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Stock Symbol (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g., AAPL"
-                    value={stockSymbol}
-                    onChange={(e) => setStockSymbol(e.target.value.toUpperCase())}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Current Stock Price ($)
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={stockPrice}
-                    onChange={(e) => setStockPrice(parseFloat(e.target.value))}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Implied Volatility (%)
-                  </label>
-                  <input
-                    type="number"
-                    step="1"
-                    value={volatility}
-                    onChange={(e) => setVolatility(parseFloat(e.target.value))}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Days to Expiration
-                  </label>
-                  <select
-                    value={daysToExpiration}
-                    onChange={(e) => setDaysToExpiration(parseInt(e.target.value))}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value={30}>30 days</option>
-                    <option value={60}>60 days</option>
-                    <option value={90}>90 days</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="mb-6">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-xl font-bold text-slate-800">Strike Prices & Option Premiums</h2>
-                  <button
-                    onClick={addStrike}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-                  >
-                    + Add Strike
-                  </button>
-                </div>
-                
-                <div className="grid gap-3">
-                  <div className="grid grid-cols-4 gap-3 text-sm font-semibold text-slate-600 px-2">
-                    <div>Strike Price</div>
-                    <div>Call Premium</div>
-                    <div>Put Premium</div>
-                    <div>Action</div>
-                  </div>
-                  {strikes.map((strike, idx) => (
-                    <div key={idx} className="grid grid-cols-4 gap-3">
-                      <input
-                        type="number"
-                        step="0.5"
-                        value={strike}
-                        onChange={(e) => updateStrike(idx, e.target.value)}
-                        className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={callPrices[idx]}
-                        onChange={(e) => updateCallPrice(idx, e.target.value)}
-                        className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                      />
-                      <input
-                        type="number"
-                        step="0.01"
-                        value={putPrices[idx]}
-                        onChange={(e) => updatePutPrice(idx, e.target.value)}
-                        className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:border-blue-500 focus:outline-none"
-                      />
-                      <button
-                        onClick={() => removeStrike(idx)}
-                        className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-
-          <div className="mb-6">
-            <label className="block text-sm font-semibold text-slate-700 mb-3">
-              Select Strategy
-            </label>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {strategies.map((strategy) => (
-                <button
-                  key={strategy.value}
-                  onClick={() => setSelectedStrategy(strategy.value)}
-                  className={`px-4 py-3 rounded-lg font-semibold transition ${
-                    selectedStrategy === strategy.value
-                      ? 'bg-blue-600 text-white shadow-lg'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  {strategy.label}
-                </button>
-              ))}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-16">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-orange-500 transition-all">
+              <div className="text-4xl mb-4">📊</div>
+              <h3 className="text-xl font-bold text-white mb-2">Live Option Chains</h3>
+              <p className="text-zinc-400">Real-time option prices from Yahoo Finance</p>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-orange-500 transition-all">
+              <div className="text-4xl mb-4">⚡</div>
+              <h3 className="text-xl font-bold text-white mb-2">Interactive Selection</h3>
+              <p className="text-zinc-400">Click to build multi-leg strategies instantly</p>
+            </div>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-orange-500 transition-all">
+              <div className="text-4xl mb-4">🎯</div>
+              <h3 className="text-xl font-bold text-white mb-2">Smart Analysis</h3>
+              <p className="text-zinc-400">Instant risk/reward calculations</p>
             </div>
           </div>
         </div>
+      </div>
+    );
+  }
 
+  return (
+    <div className="min-h-screen bg-black">
+      {/* Header */}
+      <div className="bg-zinc-900 border-b border-zinc-800 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center space-x-3">
+              <span className="text-3xl">🐅</span>
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-orange-500 to-orange-600 bg-clip-text text-transparent">
+                Tiger Options
+              </h1>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Search and Fetch */}
+        <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-zinc-400 mb-2">
+                Stock Symbol
+              </label>
+              <input
+                type="text"
+                placeholder="Enter symbol (e.g., AAPL, TSLA, SPY)"
+                value={stockSymbol}
+                onChange={(e) => setStockSymbol(e.target.value.toUpperCase())}
+                onKeyPress={(e) => e.key === 'Enter' && fetchOptionData()}
+                className="w-full px-4 py-3 bg-black border border-zinc-700 rounded-lg text-white focus:border-orange-500 focus:outline-none"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={fetchOptionData}
+                disabled={loading || !stockSymbol}
+                className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-orange-500 to-orange-600 text-white font-semibold rounded-lg hover:from-orange-600 hover:to-orange-700 transition disabled:from-zinc-700 disabled:to-zinc-700 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    🔄 Fetch Options
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+          {error && (
+            <div className="mt-4 p-3 bg-red-500/10 border border-red-500 rounded-lg text-red-500 text-sm">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Stock Info & Expiration */}
+        {stockPrice > 0 && (
+          <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+              <div>
+                <div className="text-sm text-zinc-400">Stock Price</div>
+                <div className="text-2xl font-bold text-white">${stockPrice}</div>
+              </div>
+              <div>
+                <div className="text-sm text-zinc-400">Implied Volatility</div>
+                <div className="text-2xl font-bold text-orange-500">{volatility}%</div>
+              </div>
+              <div>
+                <div className="text-sm text-zinc-400">Symbol</div>
+                <div className="text-2xl font-bold text-white">{stockSymbol}</div>
+              </div>
+              <div>
+                <div className="text-sm text-zinc-400">Strategy</div>
+                <select
+                  value={selectedStrategy}
+                  onChange={(e) => {
+                    setSelectedStrategy(e.target.value);
+                    setSelectedOptions([]);
+                  }}
+                  className="w-full px-3 py-2 bg-black border border-zinc-700 rounded-lg text-white text-sm focus:border-orange-500 focus:outline-none"
+                >
+                  {strategies.map(s => (
+                    <option key={s.value} value={s.value}>{s.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {expirationDates.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-zinc-400 mb-2">
+                  Expiration Date
+                </label>
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                  {expirationDates.slice(0, 8).map(exp => (
+                    <button
+                      key={exp.timestamp}
+                      onClick={() => handleExpirationChange(exp.timestamp)}
+                      className={`px-4 py-2 rounded-lg font-medium whitespace-nowrap transition ${
+                        selectedExpiration === exp.timestamp
+                          ? 'bg-orange-500 text-white'
+                          : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                      }`}
+                    >
+                      {exp.date} ({exp.daysToExp}d)
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Selected Options Display */}
+        {selectedOptions.length > 0 && (
+          <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
+            <h3 className="text-lg font-bold text-white mb-3">Selected Options ({selectedOptions.length})</h3>
+            <div className="space-y-2">
+              {selectedOptions.map((opt, idx) => (
+                <div key={idx} className="flex justify-between items-center bg-black border border-zinc-800 rounded-lg p-3">
+                  <div>
+                    <span className={`font-semibold ${opt.type === 'call' ? 'text-green-500' : 'text-red-500'}`}>
+                      {opt.type.toUpperCase()}
+                    </span>
+                    <span className="text-white ml-2">${opt.strike}</span>
+                    <span className="text-zinc-400 ml-2 text-sm">@ ${opt.lastPrice}</span>
+                  </div>
+                  <button
+                    onClick={() => toggleOptionSelection(opt, opt.type)}
+                    className="text-red-500 hover:text-red-400"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Analysis Results */}
         {results && (
-          <>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-              <div className="bg-white rounded-lg shadow-xl p-6">
-                <div className="flex items-center mb-4">
-                  <TrendingUp className="text-green-600 mr-2" size={24} />
-                  <h2 className="text-2xl font-bold text-slate-800">Best Reward Opportunities</h2>
-                </div>
-                <p className="text-sm text-slate-600 mb-4">Highest percentage gain potential</p>
-                
-                <div className="space-y-3">
-                  {results.byReward.slice(0, 3).map((result, idx) => (
-                    <div key={idx} className="bg-gradient-to-r from-green-50 to-emerald-50 p-4 rounded-lg border-l-4 border-green-500">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <span className="text-lg font-bold text-slate-800">
-                            {result.description || `${result.strike} ${selectedStrategy === 'put' ? 'Put' : 'Call'}`}
-                          </span>
-                        </div>
-                        <span className="text-xl font-bold text-green-600">+{result.percentGain}%</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-sm mt-2">
-                        <div>
-                          <span className="text-slate-600">Cost:</span>
-                          <span className="font-semibold ml-1">
-                            ${result.currentPrice || result.netDebit || result.totalCost}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-slate-600">Max Gain:</span>
-                          <span className="font-semibold ml-1">
-                            ${result.maxGain}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+          <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6 mb-6">
+            <h3 className="text-lg font-bold text-white mb-4">Strategy Analysis</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="bg-black border border-zinc-800 rounded-lg p-4">
+                <div className="text-sm text-zinc-400">Total Cost</div>
+                <div className="text-xl font-bold text-white">${results.currentCost}</div>
               </div>
-
-              <div className="bg-white rounded-lg shadow-xl p-6">
-                <div className="flex items-center mb-4">
-                  <DollarSign className="text-blue-600 mr-2" size={24} />
-                  <h2 className="text-2xl font-bold text-slate-800">Best Risk-Adjusted Returns</h2>
-                </div>
-                <p className="text-sm text-slate-600 mb-4">Optimal reward to risk ratios</p>
-                
-                <div className="space-y-3">
-                  {results.byRatio.slice(0, 3).map((result, idx) => (
-                    <div key={idx} className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-lg border-l-4 border-blue-500">
-                      <div className="flex justify-between items-start mb-2">
-                        <div>
-                          <span className="text-lg font-bold text-slate-800">
-                            {result.description || `${result.strike} ${selectedStrategy === 'put' ? 'Put' : 'Call'}`}
-                          </span>
-                        </div>
-                        <span className="text-xl font-bold text-blue-600">{result.rewardRiskRatio}:1</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-sm mt-2">
-                        <div>
-                          <span className="text-slate-600">Upside:</span>
-                          <span className="font-semibold text-green-600 ml-1">+{result.percentGain}%</span>
-                        </div>
-                        <div>
-                          <span className="text-slate-600">Downside:</span>
-                          <span className="font-semibold text-red-600 ml-1">{result.percentLoss}%</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              <div className="bg-black border border-zinc-800 rounded-lg p-4">
+                <div className="text-sm text-zinc-400">Max Gain</div>
+                <div className="text-xl font-bold text-green-500">${results.maxGain}</div>
+              </div>
+              <div className="bg-black border border-zinc-800 rounded-lg p-4">
+                <div className="text-sm text-zinc-400">Max Loss</div>
+                <div className="text-xl font-bold text-red-500">${results.maxLoss}</div>
+              </div>
+              <div className="bg-black border border-zinc-800 rounded-lg p-4">
+                <div className="text-sm text-zinc-400">R/R Ratio</div>
+                <div className="text-xl font-bold text-orange-500">{results.rewardRiskRatio}:1</div>
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              <div className="bg-black border border-zinc-800 rounded-lg p-4">
+                <div className="text-sm text-zinc-400">If Stock Rises</div>
+                <div className="text-xl font-bold text-green-500">+{results.percentGain}%</div>
+                <div className="text-sm text-zinc-400 mt-1">${results.profitUp}</div>
+              </div>
+              <div className="bg-black border border-zinc-800 rounded-lg p-4">
+                <div className="text-sm text-zinc-400">If Stock Falls</div>
+                <div className="text-xl font-bold text-red-500">{results.percentLoss}%</div>
+                <div className="text-sm text-zinc-400 mt-1">${results.profitDown}</div>
+              </div>
+            </div>
+          </div>
+        )}
 
-            <div className="bg-white rounded-lg shadow-xl p-6">
-              <h2 className="text-2xl font-bold text-slate-800 mb-4">Complete Analysis</h2>
-              
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="bg-slate-100">
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Strategy</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Cost/Credit</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Max Gain</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">Max Loss</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">% Gain</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">% Loss</th>
-                      <th className="px-4 py-3 text-left text-sm font-semibold text-slate-700">R/R Ratio</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.all.map((result, idx) => (
-                      <tr key={idx} className="border-b border-slate-200 hover:bg-slate-50">
-                        <td className="px-4 py-3 font-semibold">
-                          {result.description || `${result.strike}`}
+        {/* Option Chain */}
+        {optionChain && (
+          <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-4 sm:p-6">
+            <h3 className="text-lg font-bold text-white mb-4">
+              Option Chain - Click to Select
+              {strategies.find(s => s.value === selectedStrategy) && (
+                <span className="text-sm text-zinc-400 ml-2">
+                  (Select {strategies.find(s => s.value === selectedStrategy).legs} option{strategies.find(s => s.value === selectedStrategy).legs > 1 ? 's' : ''})
+                </span>
+              )}
+            </h3>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800">
+                    <th className="px-3 py-3 text-left font-medium text-green-500">CALLS</th>
+                    <th className="px-3 py-3 text-center font-medium text-zinc-400">Strike</th>
+                    <th className="px-3 py-3 text-right font-medium text-red-500">PUTS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {optionChain.calls.map((call, idx) => {
+                    const put = optionChain.puts.find(p => p.strike === call.strike);
+                    const callSelected = selectedOptions.some(o => o.contractSymbol === call.contractSymbol);
+                    const putSelected = put && selectedOptions.some(o => o.contractSymbol === put.contractSymbol);
+                    
+                    return (
+                      <tr key={idx} className="border-b border-zinc-800 hover:bg-zinc-800">
+                        <td
+                          onClick={() => toggleOptionSelection(call, 'call')}
+                          className={`px-3 py-3 cursor-pointer transition ${
+                            callSelected 
+                              ? 'bg-green-500/20 text-green-400 font-bold' 
+                              : 'text-zinc-300 hover:bg-zinc-700'
+                          }`}
+                        >
+                          <div className="flex justify-between">
+                            <span>${call.lastPrice.toFixed(2)}</span>
+                            <span className="text-xs text-zinc-500">IV: {(call.impliedVolatility * 100).toFixed(0)}%</span>
+                          </div>
                         </td>
-                        <td className="px-4 py-3">
-                          ${result.currentPrice || result.netDebit || result.netCredit || result.totalCost}
+                        <td className={`px-3 py-3 text-center font-bold ${
+                          Math.abs(call.strike - stockPrice) < stockPrice * 0.02 
+                            ? 'text-orange-500' 
+                            : 'text-white'
+                        }`}>
+                          ${call.strike}
                         </td>
-                        <td className="px-4 py-3 text-green-600 font-semibold">
-                          ${result.maxGain}
+                        <td
+                          onClick={() => put && toggleOptionSelection(put, 'put')}
+                          className={`px-3 py-3 cursor-pointer transition text-right ${
+                            putSelected 
+                              ? 'bg-red-500/20 text-red-400 font-bold' 
+                              : 'text-zinc-300 hover:bg-zinc-700'
+                          }`}
+                        >
+                          {put && (
+                            <div className="flex justify-between">
+                              <span className="text-xs text-zinc-500">IV: {(put.impliedVolatility * 100).toFixed(0)}%</span>
+                              <span>${put.lastPrice.toFixed(2)}</span>
+                            </div>
+                          )}
                         </td>
-                        <td className="px-4 py-3 text-red-600 font-semibold">
-                          ${result.maxLoss}
-                        </td>
-                        <td className="px-4 py-3 font-semibold text-green-600">+{result.percentGain}%</td>
-                        <td className="px-4 py-3 font-semibold text-red-600">{result.percentLoss}%</td>
-                        <td className="px-4 py-3 font-bold text-blue-600">{result.rewardRiskRatio}</td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-
-            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-6 mt-6">
-              <h3 className="text-lg font-bold text-slate-800 mb-3">Strategy Notes</h3>
-              <div className="text-sm text-slate-700 space-y-2">
-                {selectedStrategy === 'call' && (
-                  <p><strong>Long Call:</strong> Unlimited profit potential with limited risk. Best for bullish outlook with defined risk.</p>
-                )}
-                {selectedStrategy === 'put' && (
-                  <p><strong>Long Put:</strong> Profits from downside movement with limited risk. Best for bearish outlook with defined risk.</p>
-                )}
-                {selectedStrategy === 'vertical_call_spread' && (
-                  <p><strong>Bull Call Spread:</strong> Limited profit and loss. Lower cost than buying calls outright. Best for moderately bullish outlook.</p>
-                )}
-                {selectedStrategy === 'vertical_put_spread' && (
-                  <p><strong>Bear Put Spread:</strong> Limited profit and loss. Lower cost than buying puts outright. Best for moderately bearish outlook.</p>
-                )}
-                {selectedStrategy === 'butterfly' && (
-                  <p><strong>Long Call Butterfly:</strong> Low-cost, limited risk strategy that profits from minimal price movement. Best when expecting low volatility near the middle strike.</p>
-                )}
-                {selectedStrategy === 'put_butterfly' && (
-                  <p><strong>Long Put Butterfly:</strong> Similar to call butterfly but constructed with puts. Profits from stock staying near middle strike at expiration.</p>
-                )}
-                {selectedStrategy === 'iron_condor' && (
-                  <p><strong>Iron Condor:</strong> Credit strategy profiting from low volatility. Collects premium if stock stays within a range. Limited profit and loss.</p>
-                )}
-                {selectedStrategy === 'straddle' && (
-                  <p><strong>Long Straddle:</strong> Profits from large moves in either direction. Best when expecting high volatility but uncertain about direction.</p>
-                )}
-                {selectedStrategy === 'strangle' && (
-                  <p><strong>Long Strangle:</strong> Similar to straddle but with different strikes. Lower cost but requires larger moves to profit. Best for volatile markets.</p>
-                )}
-              </div>
-            </div>
-          </>
+          </div>
         )}
       </div>
     </div>
